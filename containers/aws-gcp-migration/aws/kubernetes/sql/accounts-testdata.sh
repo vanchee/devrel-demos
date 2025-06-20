@@ -1,4 +1,4 @@
-HOST="cymbalbank.cx6oakwa20qh.us-west-1.rds.amazonaws.com"
+HOST="pv-rds-gcpdemo-summit.cpkg2suyynq5.ap-southeast-2.rds.amazonaws.com"
 POSTGRES_DB="accounts-db"
 POSTGRES_USER="postgres"
 LOCAL_ROUTING_NUM="883745000"

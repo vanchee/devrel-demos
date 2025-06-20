@@ -212,7 +212,7 @@ spec:
       containers:
       - name: populate-accounts-db
         image: postgres:16.6-alpine@sha256:1d04b9ba1d4996401f2552b51beda8187f175c0645c091e4781134fc9c9a3eef
-        command: ['bash', '-c','. /scripts/initialize-database.sh cymbalbank.cx6oakwa20qh.us-west-1.rds.amazonaws.com 5432 accounts-db']
+        command: ['bash', '-c','. /scripts/initialize-database.sh pv-rds-gcpdemo-summit.cpkg2suyynq5.ap-southeast-2.rds.amazonaws.com 5432 accounts-db']
         volumeMounts:
         - name: scripts
           mountPath: "/scripts"
@@ -231,7 +231,7 @@ spec:
         - name: POSTGRES_DB
           value: "accounts-db"
         - name: PGHOSTADDR
-          value: cymbalbank.cx6oakwa20qh.us-west-1.rds.amazonaws.com
+          value: pv-rds-gcpdemo-summit.cpkg2suyynq5.ap-southeast-2.rds.amazonaws.com
         - name: POSTGRES_USER
           value: postgres
         - name: POSTGRES_PASSWORD

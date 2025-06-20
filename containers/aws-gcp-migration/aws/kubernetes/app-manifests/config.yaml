@@ -47,7 +47,7 @@ metadata:
   labels:
     app: accounts-db
 data:
-  ACCOUNTS_DB_URI: postgresql://postgres:Chiapet22!@cymbalbank.cx6oakwa20qh.us-west-1.rds.amazonaws.com:5432/accounts-db
+  ACCOUNTS_DB_URI: postgresql://postgres:Chiapet22!@pv-rds-gcpdemo-summit.cpkg2suyynq5.ap-southeast-2.rds.amazonaws.com:5432/accounts-db
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -59,6 +59,6 @@ data:
   POSTGRES_DB: ledger-db
   POSTGRES_USER: postgres
   POSTGRES_PASSWORD: Chiapet22!
-  SPRING_DATASOURCE_URL: jdbc:postgresql://cymbalbank.cx6oakwa20qh.us-west-1.rds.amazonaws.com:5432/ledger-db
+  SPRING_DATASOURCE_URL: jdbc:postgresql://pv-rds-gcpdemo-summit.cpkg2suyynq5.ap-southeast-2.rds.amazonaws.com:5432/ledger-db
   SPRING_DATASOURCE_USERNAME: postgres  
   SPRING_DATASOURCE_PASSWORD: Chiapet22!  

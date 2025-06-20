@@ -31,7 +31,7 @@ spec:
       terminationGracePeriodSeconds: 5
       containers:
       - name: front
-        image: 127214177435.dkr.ecr.us-west-1.amazonaws.com/cymbalbank/frontend:latest
+        image: 172236798953.dkr.ecr.ap-southeast-2.amazonaws.com/cymbalbank/frontend:latest
         imagePullPolicy: Always
         volumeMounts:
         - name: publickey
@@ -57,7 +57,7 @@ spec:
         #   value: ""
         # Customize the cluster name if it cannot be retrieved from the metadata server
         - name: CLUSTER_NAME
-          value: "🟧 AWS Elastic Kubernetes Service (EKS) - Auto Mode - us-west-1"
+          value: "🟧 AWS Elastic Kubernetes Service (EKS) - Auto Mode - ap-southeast-2"
         - name: DEFAULT_USERNAME
           valueFrom:
             configMapKeyRef:

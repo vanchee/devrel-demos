@@ -1,6 +1,6 @@
 #!/bin/bash
 
-HOST="cymbalbank.cx6oakwa20qh.us-west-1.rds.amazonaws.com"
+HOST="pv-rds-gcpdemo-summit.cpkg2suyynq5.ap-southeast-2.rds.amazonaws.com"
 POSTGRES_DB="ledger-db"
 POSTGRES_USER="postgres"
 PG_PASSWORD="Chiapet22!"

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ECR_URL="127214177435.dkr.ecr.us-west-1.amazonaws.com/cymbalbank/"
+ECR_URL="172236798953.dkr.ecr.ap-southeast-2.amazonaws.com/cymbalbank/"
 IMAGE_TAG="latest"
 
 # FRONTEND

@@ -29,7 +29,7 @@ spec:
       terminationGracePeriodSeconds: 5
       containers:
       - name: transactionhistory
-        image: 127214177435.dkr.ecr.us-west-1.amazonaws.com/cymbalbank/transactionhistory:latest
+        image: 172236798953.dkr.ecr.ap-southeast-2.amazonaws.com/cymbalbank/transactionhistory:latest
         imagePullPolicy: Always
         volumeMounts:
         - name: publickey
