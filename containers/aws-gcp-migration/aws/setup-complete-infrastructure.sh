@@ -137,6 +137,25 @@ subnet_exists() {
     fi
 }
 
+# Function to check if route table association exists
+route_table_association_exists() {
+    local subnet_id=$1
+    local route_table_id=$2
+    
+    local association_id=$(aws ec2 describe-route-tables \
+        --route-table-ids $route_table_id \
+        --region $REGION \
+        --query "RouteTables[0].Associations[?SubnetId=='$subnet_id'].RouteTableAssociationId" \
+        --output text)
+    
+    if [ "$association_id" != "None" ] && [ -n "$association_id" ]; then
+        echo $association_id
+        return 0
+    else
+        return 1
+    fi
+}
+
 # 1. Create VPC with CIDR 10.0.0.0/16
 print_status "Creating VPC: $VPC_NAME"
 
@@ -156,14 +175,33 @@ fi
 
 # 2. Create Internet Gateway
 print_status "Creating Internet Gateway"
-IGW_ID=$(aws ec2 create-internet-gateway \
-  --region $REGION \
-  --query 'InternetGateway.InternetGatewayId' \
-  --output text)
 
-aws ec2 create-tags --resources $IGW_ID --tags Key=Name,Value="${VPC_NAME}-igw" --region $REGION
-aws ec2 attach-internet-gateway --vpc-id $VPC_ID --internet-gateway-id $IGW_ID --region $REGION
-print_success "Internet Gateway created and attached: $IGW_ID"
+# Check if Internet Gateway already exists
+IGW_ID=$(aws ec2 describe-internet-gateways \
+    --filters "Name=tag:Name,Values=${VPC_NAME}-igw" \
+    --region $REGION \
+    --query 'InternetGateways[0].InternetGatewayId' \
+    --output text)
+
+if [ "$IGW_ID" == "None" ] || [ -z "$IGW_ID" ]; then
+    IGW_ID=$(aws ec2 create-internet-gateway \
+      --region $REGION \
+      --query 'InternetGateway.InternetGatewayId' \
+      --output text)
+
+    aws ec2 create-tags --resources $IGW_ID --tags Key=Name,Value="${VPC_NAME}-igw" --region $REGION
+    print_success "Internet Gateway created: $IGW_ID"
+else
+    print_warning "Internet Gateway already exists: $IGW_ID"
+fi
+
+# Check if IGW is already attached to VPC
+if ! aws ec2 describe-internet-gateways --internet-gateway-ids $IGW_ID --region $REGION --query 'InternetGateways[0].Attachments[0].VpcId' --output text | grep -q $VPC_ID; then
+    aws ec2 attach-internet-gateway --vpc-id $VPC_ID --internet-gateway-id $IGW_ID --region $REGION
+    print_success "Internet Gateway attached to VPC"
+else
+    print_warning "Internet Gateway already attached to VPC"
+fi
 
 # 3. Create Public Subnets (for EKS Control Plane and ALB)
 print_status "Creating Public Subnets"
@@ -280,42 +318,102 @@ print_success "Database Subnets configured: $DB_SUBNET_1, $DB_SUBNET_2"
 # 6. Create Route Tables
 print_status "Creating Route Tables"
 
-# Public Route Table
-PUBLIC_RT=$(aws ec2 create-route-table \
-  --vpc-id $VPC_ID \
-  --region $REGION \
-  --query 'RouteTable.RouteTableId' \
-  --output text)
+# Check if route tables already exist
+PUBLIC_RT=$(aws ec2 describe-route-tables \
+    --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=${VPC_NAME}-public-rt" \
+    --region $REGION \
+    --query 'RouteTables[0].RouteTableId' \
+    --output text)
 
-aws ec2 create-tags --resources $PUBLIC_RT --tags Key=Name,Value="${VPC_NAME}-public-rt" --region $REGION
+if [ "$PUBLIC_RT" == "None" ] || [ -z "$PUBLIC_RT" ]; then
+    PUBLIC_RT=$(aws ec2 create-route-table \
+      --vpc-id $VPC_ID \
+      --region $REGION \
+      --query 'RouteTable.RouteTableId' \
+      --output text)
 
-# Add route to Internet Gateway
-aws ec2 create-route \
-  --route-table-id $PUBLIC_RT \
-  --destination-cidr-block 0.0.0.0/0 \
-  --gateway-id $IGW_ID \
-  --region $REGION
+    aws ec2 create-tags --resources $PUBLIC_RT --tags Key=Name,Value="${VPC_NAME}-public-rt" --region $REGION
+    print_success "Public Route Table created: $PUBLIC_RT"
+else
+    print_warning "Public Route Table already exists: $PUBLIC_RT"
+fi
+
+# Add route to Internet Gateway (only if it doesn't exist)
+if ! aws ec2 describe-route-tables --route-table-ids $PUBLIC_RT --region $REGION --query 'RouteTables[0].Routes[?GatewayId!=`null`].GatewayId' --output text | grep -q $IGW_ID; then
+    aws ec2 create-route \
+      --route-table-id $PUBLIC_RT \
+      --destination-cidr-block 0.0.0.0/0 \
+      --gateway-id $IGW_ID \
+      --region $REGION
+    print_success "Internet Gateway route added to public route table"
+else
+    print_warning "Internet Gateway route already exists in public route table"
+fi
 
 # Associate public subnets with public route table
-aws ec2 associate-route-table --subnet-id $PUBLIC_SUBNET_1 --route-table-id $PUBLIC_RT --region $REGION
-aws ec2 associate-route-table --subnet-id $PUBLIC_SUBNET_2 --route-table-id $PUBLIC_RT --region $REGION
+if ! route_table_association_exists $PUBLIC_SUBNET_1 $PUBLIC_RT; then
+    aws ec2 associate-route-table --subnet-id $PUBLIC_SUBNET_1 --route-table-id $PUBLIC_RT --region $REGION
+    print_success "Public Subnet 1 associated with public route table"
+else
+    print_warning "Public Subnet 1 already associated with public route table"
+fi
+
+if ! route_table_association_exists $PUBLIC_SUBNET_2 $PUBLIC_RT; then
+    aws ec2 associate-route-table --subnet-id $PUBLIC_SUBNET_2 --route-table-id $PUBLIC_RT --region $REGION
+    print_success "Public Subnet 2 associated with public route table"
+else
+    print_warning "Public Subnet 2 already associated with public route table"
+fi
 
 # Private Route Table
-PRIVATE_RT=$(aws ec2 create-route-table \
-  --vpc-id $VPC_ID \
-  --region $REGION \
-  --query 'RouteTable.RouteTableId' \
-  --output text)
+PRIVATE_RT=$(aws ec2 describe-route-tables \
+    --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=${VPC_NAME}-private-rt" \
+    --region $REGION \
+    --query 'RouteTables[0].RouteTableId' \
+    --output text)
 
-aws ec2 create-tags --resources $PRIVATE_RT --tags Key=Name,Value="${VPC_NAME}-private-rt" --region $REGION
+if [ "$PRIVATE_RT" == "None" ] || [ -z "$PRIVATE_RT" ]; then
+    PRIVATE_RT=$(aws ec2 create-route-table \
+      --vpc-id $VPC_ID \
+      --region $REGION \
+      --query 'RouteTable.RouteTableId' \
+      --output text)
+
+    aws ec2 create-tags --resources $PRIVATE_RT --tags Key=Name,Value="${VPC_NAME}-private-rt" --region $REGION
+    print_success "Private Route Table created: $PRIVATE_RT"
+else
+    print_warning "Private Route Table already exists: $PRIVATE_RT"
+fi
 
 # Associate private subnets with private route table
-aws ec2 associate-route-table --subnet-id $PRIVATE_SUBNET_1 --route-table-id $PRIVATE_RT --region $REGION
-aws ec2 associate-route-table --subnet-id $PRIVATE_SUBNET_2 --route-table-id $PRIVATE_RT --region $REGION
+if ! route_table_association_exists $PRIVATE_SUBNET_1 $PRIVATE_RT; then
+    aws ec2 associate-route-table --subnet-id $PRIVATE_SUBNET_1 --route-table-id $PRIVATE_RT --region $REGION
+    print_success "Private Subnet 1 associated with private route table"
+else
+    print_warning "Private Subnet 1 already associated with private route table"
+fi
+
+if ! route_table_association_exists $PRIVATE_SUBNET_2 $PRIVATE_RT; then
+    aws ec2 associate-route-table --subnet-id $PRIVATE_SUBNET_2 --route-table-id $PRIVATE_RT --region $REGION
+    print_success "Private Subnet 2 associated with private route table"
+else
+    print_warning "Private Subnet 2 already associated with private route table"
+fi
 
 # Associate database subnets with private route table
-aws ec2 associate-route-table --subnet-id $DB_SUBNET_1 --route-table-id $PRIVATE_RT --region $REGION
-aws ec2 associate-route-table --subnet-id $DB_SUBNET_2 --route-table-id $PRIVATE_RT --region $REGION
+if ! route_table_association_exists $DB_SUBNET_1 $PRIVATE_RT; then
+    aws ec2 associate-route-table --subnet-id $DB_SUBNET_1 --route-table-id $PRIVATE_RT --region $REGION
+    print_success "Database Subnet 1 associated with private route table"
+else
+    print_warning "Database Subnet 1 already associated with private route table"
+fi
+
+if ! route_table_association_exists $DB_SUBNET_2 $PRIVATE_RT; then
+    aws ec2 associate-route-table --subnet-id $DB_SUBNET_2 --route-table-id $PRIVATE_RT --region $REGION
+    print_success "Database Subnet 2 associated with private route table"
+else
+    print_warning "Database Subnet 2 already associated with private route table"
+fi
 
 print_success "Route Tables created and configured"
 
@@ -391,66 +489,126 @@ print_success "Security Groups created"
 # 8. Configure Security Group Rules
 print_status "Configuring Security Group Rules"
 
+# Function to check if security group rule exists
+security_group_rule_exists() {
+    local sg_id=$1
+    local protocol=$2
+    local port=$3
+    local source=$4
+    
+    local rule_exists=$(aws ec2 describe-security-groups \
+        --group-ids $sg_id \
+        --region $REGION \
+        --query "SecurityGroups[0].IpPermissions[?Protocol=='$protocol' && FromPort==$port && ToPort==$port].UserIdGroupPairs[?GroupId=='$source'].GroupId" \
+        --output text)
+    
+    if [ "$rule_exists" != "None" ] && [ -n "$rule_exists" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # EKS Cluster SG Rules
-aws ec2 authorize-security-group-ingress \
-  --group-id $EKS_CLUSTER_SG \
-  --protocol tcp \
-  --port 443 \
-  --source-group $EKS_NODE_SG \
-  --region $REGION
+if ! security_group_rule_exists $EKS_CLUSTER_SG "tcp" 443 $EKS_NODE_SG; then
+    aws ec2 authorize-security-group-ingress \
+      --group-id $EKS_CLUSTER_SG \
+      --protocol tcp \
+      --port 443 \
+      --source-group $EKS_NODE_SG \
+      --region $REGION
+    print_success "EKS Cluster SG rule added"
+else
+    print_warning "EKS Cluster SG rule already exists"
+fi
 
 # EKS Node SG Rules
-aws ec2 authorize-security-group-ingress \
-  --group-id $EKS_NODE_SG \
-  --protocol all \
-  --source-group $EKS_NODE_SG \
-  --region $REGION
+if ! security_group_rule_exists $EKS_NODE_SG "tcp" -1 $EKS_NODE_SG; then
+    aws ec2 authorize-security-group-ingress \
+      --group-id $EKS_NODE_SG \
+      --protocol all \
+      --source-group $EKS_NODE_SG \
+      --region $REGION
+    print_success "EKS Node SG self-referencing rule added"
+else
+    print_warning "EKS Node SG self-referencing rule already exists"
+fi
 
-aws ec2 authorize-security-group-ingress \
-  --group-id $EKS_NODE_SG \
-  --protocol tcp \
-  --port 443 \
-  --source-group $EKS_CLUSTER_SG \
-  --region $REGION
+if ! security_group_rule_exists $EKS_NODE_SG "tcp" 443 $EKS_CLUSTER_SG; then
+    aws ec2 authorize-security-group-ingress \
+      --group-id $EKS_NODE_SG \
+      --protocol tcp \
+      --port 443 \
+      --source-group $EKS_CLUSTER_SG \
+      --region $REGION
+    print_success "EKS Node SG cluster access rule added"
+else
+    print_warning "EKS Node SG cluster access rule already exists"
+fi
 
-aws ec2 authorize-security-group-ingress \
-  --group-id $EKS_NODE_SG \
-  --protocol tcp \
-  --port 8080 \
-  --source-group $ALB_SG \
-  --region $REGION
+if ! security_group_rule_exists $EKS_NODE_SG "tcp" 8080 $ALB_SG; then
+    aws ec2 authorize-security-group-ingress \
+      --group-id $EKS_NODE_SG \
+      --protocol tcp \
+      --port 8080 \
+      --source-group $ALB_SG \
+      --region $REGION
+    print_success "EKS Node SG ALB access rule added"
+else
+    print_warning "EKS Node SG ALB access rule already exists"
+fi
 
 # RDS SG Rules
-aws ec2 authorize-security-group-ingress \
-  --group-id $RDS_SG \
-  --protocol tcp \
-  --port 5432 \
-  --source-group $EKS_NODE_SG \
-  --region $REGION
+if ! security_group_rule_exists $RDS_SG "tcp" 5432 $EKS_NODE_SG; then
+    aws ec2 authorize-security-group-ingress \
+      --group-id $RDS_SG \
+      --protocol tcp \
+      --port 5432 \
+      --source-group $EKS_NODE_SG \
+      --region $REGION
+    print_success "RDS SG EKS access rule added"
+else
+    print_warning "RDS SG EKS access rule already exists"
+fi
 
 # Allow access from your current IP for management
 YOUR_IP=$(curl -s ifconfig.me)
-aws ec2 authorize-security-group-ingress \
-  --group-id $RDS_SG \
-  --protocol tcp \
-  --port 5432 \
-  --cidr "${YOUR_IP}/32" \
-  --region $REGION
+if ! aws ec2 describe-security-groups --group-ids $RDS_SG --region $REGION --query "SecurityGroups[0].IpPermissions[?Protocol=='tcp' && FromPort==5432 && ToPort==5432].IpRanges[?CidrIp=='${YOUR_IP}/32'].CidrIp" --output text | grep -q "${YOUR_IP}/32"; then
+    aws ec2 authorize-security-group-ingress \
+      --group-id $RDS_SG \
+      --protocol tcp \
+      --port 5432 \
+      --cidr "${YOUR_IP}/32" \
+      --region $REGION
+    print_success "RDS SG management IP access rule added"
+else
+    print_warning "RDS SG management IP access rule already exists"
+fi
 
 # ALB SG Rules
-aws ec2 authorize-security-group-ingress \
-  --group-id $ALB_SG \
-  --protocol tcp \
-  --port 80 \
-  --cidr "0.0.0.0/0" \
-  --region $REGION
+if ! aws ec2 describe-security-groups --group-ids $ALB_SG --region $REGION --query "SecurityGroups[0].IpPermissions[?Protocol=='tcp' && FromPort==80 && ToPort==80].IpRanges[?CidrIp=='0.0.0.0/0'].CidrIp" --output text | grep -q "0.0.0.0/0"; then
+    aws ec2 authorize-security-group-ingress \
+      --group-id $ALB_SG \
+      --protocol tcp \
+      --port 80 \
+      --cidr "0.0.0.0/0" \
+      --region $REGION
+    print_success "ALB SG HTTP access rule added"
+else
+    print_warning "ALB SG HTTP access rule already exists"
+fi
 
-aws ec2 authorize-security-group-ingress \
-  --group-id $ALB_SG \
-  --protocol tcp \
-  --port 443 \
-  --cidr "0.0.0.0/0" \
-  --region $REGION
+if ! aws ec2 describe-security-groups --group-ids $ALB_SG --region $REGION --query "SecurityGroups[0].IpPermissions[?Protocol=='tcp' && FromPort==443 && ToPort==443].IpRanges[?CidrIp=='0.0.0.0/0'].CidrIp" --output text | grep -q "0.0.0.0/0"; then
+    aws ec2 authorize-security-group-ingress \
+      --group-id $ALB_SG \
+      --protocol tcp \
+      --port 443 \
+      --cidr "0.0.0.0/0" \
+      --region $REGION
+    print_success "ALB SG HTTPS access rule added"
+else
+    print_warning "ALB SG HTTPS access rule already exists"
+fi
 
 print_success "Security Group Rules configured"
 
