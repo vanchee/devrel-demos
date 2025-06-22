@@ -718,8 +718,6 @@ else
       --nodes-min 1 \
       --nodes-max 4 \
       --managed \
-      --ssh-access \
-      --ssh-public-key my-key \
       --external-dns-access \
       --full-ecr-access \
       --appmesh-access \
