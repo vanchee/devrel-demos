@@ -339,7 +339,9 @@ else
 fi
 
 # Add route to Internet Gateway (only if it doesn't exist)
-if ! aws ec2 describe-route-tables --route-table-ids $PUBLIC_RT --region $REGION --query 'RouteTables[0].Routes[?GatewayId!=`null`].GatewayId' --output text | grep -q $IGW_ID; then
+EXISTING_ROUTE=$(aws ec2 describe-route-tables --route-table-ids $PUBLIC_RT --region $REGION --query 'RouteTables[0].Routes[?DestinationCidrBlock==`0.0.0.0/0`].GatewayId' --output text)
+
+if [ "$EXISTING_ROUTE" == "None" ] || [ -z "$EXISTING_ROUTE" ]; then
     aws ec2 create-route \
       --route-table-id $PUBLIC_RT \
       --destination-cidr-block 0.0.0.0/0 \
@@ -347,7 +349,7 @@ if ! aws ec2 describe-route-tables --route-table-ids $PUBLIC_RT --region $REGION
       --region $REGION
     print_success "Internet Gateway route added to public route table"
 else
-    print_warning "Internet Gateway route already exists in public route table"
+    print_warning "Route to 0.0.0.0/0 already exists with gateway: $EXISTING_ROUTE"
 fi
 
 # Associate public subnets with public route table
