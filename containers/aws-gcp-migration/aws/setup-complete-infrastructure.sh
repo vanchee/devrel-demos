@@ -79,8 +79,26 @@ resource_exists() {
     local resource_type=$1
     local resource_name=$2
     local query=$3
+    local resource_value=$4
     
-    if aws $resource_type describe-$resource_type --$resource_name "$resource_name" --region $REGION --query "$query" --output text 2>/dev/null | grep -q .; then
+    if aws $resource_type describe-$resource_type --$resource_name "$resource_value" --region $REGION --query "$query" --output text 2>/dev/null | grep -q .; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to check if DB subnet group exists
+db_subnet_group_exists() {
+    local subnet_group_name=$1
+    
+    local subnet_group=$(aws rds describe-db-subnet-groups \
+        --db-subnet-group-name "$subnet_group_name" \
+        --region $REGION \
+        --query 'DBSubnetGroups[0].DBSubnetGroupName' \
+        --output text 2>/dev/null)
+    
+    if [ "$subnet_group" != "None" ] && [ -n "$subnet_group" ]; then
         return 0
     else
         return 1
@@ -150,6 +168,23 @@ route_table_association_exists() {
     
     if [ "$association_id" != "None" ] && [ -n "$association_id" ]; then
         echo $association_id
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to check if RDS instance exists
+rds_instance_exists() {
+    local instance_name=$1
+    
+    local instance=$(aws rds describe-db-instances \
+        --db-instance-identifier "$instance_name" \
+        --region $REGION \
+        --query 'DBInstances[0].DBInstanceIdentifier' \
+        --output text 2>/dev/null)
+    
+    if [ "$instance" != "None" ] && [ -n "$instance" ]; then
         return 0
     else
         return 1
@@ -558,7 +593,7 @@ print_success "Security Group Rules configured"
 print_status "Creating DB Subnet Group"
 
 # Check if DB subnet group already exists
-if resource_exists "rds" "db-subnet-group-name" "DBSubnetGroups[0].DBSubnetGroupName" "${RDS_INSTANCE_NAME}-subnet-group"; then
+if db_subnet_group_exists "${RDS_INSTANCE_NAME}-subnet-group"; then
     print_warning "DB Subnet Group already exists: ${RDS_INSTANCE_NAME}-subnet-group"
 else
     aws rds create-db-subnet-group \
@@ -573,7 +608,7 @@ fi
 print_status "Creating RDS Instance"
 
 # Check if RDS instance already exists
-if resource_exists "rds" "db-instance-identifier" "DBInstances[0].DBInstanceIdentifier" "$RDS_INSTANCE_NAME"; then
+if rds_instance_exists $RDS_INSTANCE_NAME; then
     print_warning "RDS Instance already exists: $RDS_INSTANCE_NAME"
     RDS_ENDPOINT=$(aws rds describe-db-instances \
         --db-instance-identifier $RDS_INSTANCE_NAME \
