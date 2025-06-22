@@ -13,7 +13,7 @@ CLUSTER_NAME="cymbalbank-cluster"
 RDS_INSTANCE_NAME="pv-syd-summit-demo-rds"
 DB_NAME="cymbalbank"
 DB_USERNAME="postgres"
-DB_PASSWORD="Chiapet22!"
+# DB_PASSWORD will be prompted for security
 POSTGRES_VERSION="15.5"  # Default PostgreSQL version for Sydney region - stable and widely supported
 
 # Colors for output
@@ -75,6 +75,19 @@ if [ -n "$user_postgres_version" ]; then
 else
     echo -e "${GREEN}Using default PostgreSQL version: $POSTGRES_VERSION${NC}"
 fi
+
+# Prompt for database password
+echo ""
+echo -e "${BLUE}Database Password${NC}: "
+read -s DB_PASSWORD
+echo ""
+
+if [ -z "$DB_PASSWORD" ]; then
+    print_error "Database password cannot be empty"
+    exit 1
+fi
+
+echo -e "${GREEN}Database password set successfully${NC}"
 
 echo ""
 

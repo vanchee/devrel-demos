@@ -1,0 +1,27 @@
+# Secure Configuration Template
+# Replace hardcoded credentials with environment variables
+# Copy this file to config.yaml and set your actual values
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: accounts-db-config
+  labels:
+    app: accounts-db
+data:
+  # Use environment variables instead of hardcoded values
+  ACCOUNTS_DB_URI: postgresql://${DB_USERNAME}:${DB_PASSWORD}@${RDS_ENDPOINT}:5432/accounts-db
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ledger-db-config
+  labels:
+    app: postgres
+data:
+  POSTGRES_DB: ledger-db
+  POSTGRES_USER: ${DB_USERNAME}
+  POSTGRES_PASSWORD: ${DB_PASSWORD}
+  SPRING_DATASOURCE_URL: jdbc:postgresql://${RDS_ENDPOINT}:5432/ledger-db
+  SPRING_DATASOURCE_USERNAME: ${DB_USERNAME}
+  SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD} 
