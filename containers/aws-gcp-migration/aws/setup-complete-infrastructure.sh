@@ -39,6 +39,17 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Function to get the latest available PostgreSQL version
+get_latest_postgres_version() {
+    local latest_version=$(aws rds describe-db-engine-versions \
+        --engine postgres \
+        --region $REGION \
+        --query 'DBEngineVersions[?SupportsStorageEncryption==`true`].EngineVersion' \
+        --output text | tr '\t' '\n' | sort -V | tail -1)
+    
+    echo $latest_version
+}
+
 # Function to check if command exists
 check_command() {
     if ! command -v $1 &> /dev/null; then
@@ -63,16 +74,85 @@ fi
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 print_success "Using AWS Account: $ACCOUNT_ID"
 
+# Function to check if resource exists
+resource_exists() {
+    local resource_type=$1
+    local resource_name=$2
+    local query=$3
+    
+    if aws $resource_type describe-$resource_type --$resource_name "$resource_name" --region $REGION --query "$query" --output text 2>/dev/null | grep -q .; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to check if VPC exists
+vpc_exists() {
+    local vpc_id=$(aws ec2 describe-vpcs \
+        --filters "Name=tag:Name,Values=$VPC_NAME" \
+        --region $REGION \
+        --query 'Vpcs[0].VpcId' \
+        --output text)
+    
+    if [ "$vpc_id" != "None" ] && [ -n "$vpc_id" ]; then
+        echo $vpc_id
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to check if security group exists
+security_group_exists() {
+    local sg_name=$1
+    local sg_id=$(aws ec2 describe-security-groups \
+        --filters "Name=group-name,Values=$sg_name" "Name=vpc-id,Values=$VPC_ID" \
+        --region $REGION \
+        --query 'SecurityGroups[0].GroupId' \
+        --output text)
+    
+    if [ "$sg_id" != "None" ] && [ -n "$sg_id" ]; then
+        echo $sg_id
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to check if subnet exists
+subnet_exists() {
+    local subnet_cidr=$1
+    local subnet_id=$(aws ec2 describe-subnets \
+        --filters "Name=vpc-id,Values=$VPC_ID" "Name=cidr-block,Values=$subnet_cidr" \
+        --region $REGION \
+        --query 'Subnets[0].SubnetId' \
+        --output text)
+    
+    if [ "$subnet_id" != "None" ] && [ -n "$subnet_id" ]; then
+        echo $subnet_id
+        return 0
+    else
+        return 1
+    fi
+}
+
 # 1. Create VPC with CIDR 10.0.0.0/16
 print_status "Creating VPC: $VPC_NAME"
-VPC_ID=$(aws ec2 create-vpc \
-  --cidr-block 10.0.0.0/16 \
-  --region $REGION \
-  --query 'Vpc.VpcId' \
-  --output text)
 
-aws ec2 create-tags --resources $VPC_ID --tags Key=Name,Value=$VPC_NAME --region $REGION
-print_success "VPC created: $VPC_ID"
+# Check if VPC already exists
+if VPC_ID=$(vpc_exists); then
+    print_warning "VPC already exists: $VPC_ID"
+else
+    VPC_ID=$(aws ec2 create-vpc \
+      --cidr-block 10.0.0.0/16 \
+      --region $REGION \
+      --query 'Vpc.VpcId' \
+      --output text)
+
+    aws ec2 create-tags --resources $VPC_ID --tags Key=Name,Value=$VPC_NAME --region $REGION
+    print_success "VPC created: $VPC_ID"
+fi
 
 # 2. Create Internet Gateway
 print_status "Creating Internet Gateway"
@@ -87,76 +167,115 @@ print_success "Internet Gateway created and attached: $IGW_ID"
 
 # 3. Create Public Subnets (for EKS Control Plane and ALB)
 print_status "Creating Public Subnets"
-PUBLIC_SUBNET_1=$(aws ec2 create-subnet \
-  --vpc-id $VPC_ID \
-  --cidr-block 10.0.1.0/24 \
-  --availability-zone ${REGION}a \
-  --region $REGION \
-  --query 'Subnet.SubnetId' \
-  --output text)
 
-PUBLIC_SUBNET_2=$(aws ec2 create-subnet \
-  --vpc-id $VPC_ID \
-  --cidr-block 10.0.2.0/24 \
-  --availability-zone ${REGION}b \
-  --region $REGION \
-  --query 'Subnet.SubnetId' \
-  --output text)
+# Check if public subnets already exist
+if PUBLIC_SUBNET_1=$(subnet_exists "10.0.1.0/24"); then
+    print_warning "Public Subnet 1 already exists: $PUBLIC_SUBNET_1"
+else
+    PUBLIC_SUBNET_1=$(aws ec2 create-subnet \
+      --vpc-id $VPC_ID \
+      --cidr-block 10.0.1.0/24 \
+      --availability-zone ${REGION}a \
+      --region $REGION \
+      --query 'Subnet.SubnetId' \
+      --output text)
 
-aws ec2 create-tags --resources $PUBLIC_SUBNET_1 --tags Key=Name,Value="${VPC_NAME}-public-1" --region $REGION
-aws ec2 create-tags --resources $PUBLIC_SUBNET_2 --tags Key=Name,Value="${VPC_NAME}-public-2" --region $REGION
+    aws ec2 create-tags --resources $PUBLIC_SUBNET_1 --tags Key=Name,Value="${VPC_NAME}-public-1" --region $REGION
+    print_success "Public Subnet 1 created: $PUBLIC_SUBNET_1"
+fi
+
+if PUBLIC_SUBNET_2=$(subnet_exists "10.0.2.0/24"); then
+    print_warning "Public Subnet 2 already exists: $PUBLIC_SUBNET_2"
+else
+    PUBLIC_SUBNET_2=$(aws ec2 create-subnet \
+      --vpc-id $VPC_ID \
+      --cidr-block 10.0.2.0/24 \
+      --availability-zone ${REGION}b \
+      --region $REGION \
+      --query 'Subnet.SubnetId' \
+      --output text)
+
+    aws ec2 create-tags --resources $PUBLIC_SUBNET_2 --tags Key=Name,Value="${VPC_NAME}-public-2" --region $REGION
+    print_success "Public Subnet 2 created: $PUBLIC_SUBNET_2"
+fi
 
 # Enable auto-assign public IP for public subnets
 aws ec2 modify-subnet-attribute --subnet-id $PUBLIC_SUBNET_1 --map-public-ip-on-launch --region $REGION
 aws ec2 modify-subnet-attribute --subnet-id $PUBLIC_SUBNET_2 --map-public-ip-on-launch --region $REGION
 
-print_success "Public Subnets created: $PUBLIC_SUBNET_1, $PUBLIC_SUBNET_2"
+print_success "Public Subnets configured: $PUBLIC_SUBNET_1, $PUBLIC_SUBNET_2"
 
 # 4. Create Private Subnets (for EKS Worker Nodes)
 print_status "Creating Private Subnets"
-PRIVATE_SUBNET_1=$(aws ec2 create-subnet \
-  --vpc-id $VPC_ID \
-  --cidr-block 10.0.3.0/24 \
-  --availability-zone ${REGION}a \
-  --region $REGION \
-  --query 'Subnet.SubnetId' \
-  --output text)
 
-PRIVATE_SUBNET_2=$(aws ec2 create-subnet \
-  --vpc-id $VPC_ID \
-  --cidr-block 10.0.4.0/24 \
-  --availability-zone ${REGION}b \
-  --region $REGION \
-  --query 'Subnet.SubnetId' \
-  --output text)
+# Check if private subnets already exist
+if PRIVATE_SUBNET_1=$(subnet_exists "10.0.3.0/24"); then
+    print_warning "Private Subnet 1 already exists: $PRIVATE_SUBNET_1"
+else
+    PRIVATE_SUBNET_1=$(aws ec2 create-subnet \
+      --vpc-id $VPC_ID \
+      --cidr-block 10.0.3.0/24 \
+      --availability-zone ${REGION}a \
+      --region $REGION \
+      --query 'Subnet.SubnetId' \
+      --output text)
 
-aws ec2 create-tags --resources $PRIVATE_SUBNET_1 --tags Key=Name,Value="${VPC_NAME}-private-1" --region $REGION
-aws ec2 create-tags --resources $PRIVATE_SUBNET_2 --tags Key=Name,Value="${VPC_NAME}-private-2" --region $REGION
+    aws ec2 create-tags --resources $PRIVATE_SUBNET_1 --tags Key=Name,Value="${VPC_NAME}-private-1" --region $REGION
+    print_success "Private Subnet 1 created: $PRIVATE_SUBNET_1"
+fi
 
-print_success "Private Subnets created: $PRIVATE_SUBNET_1, $PRIVATE_SUBNET_2"
+if PRIVATE_SUBNET_2=$(subnet_exists "10.0.4.0/24"); then
+    print_warning "Private Subnet 2 already exists: $PRIVATE_SUBNET_2"
+else
+    PRIVATE_SUBNET_2=$(aws ec2 create-subnet \
+      --vpc-id $VPC_ID \
+      --cidr-block 10.0.4.0/24 \
+      --availability-zone ${REGION}b \
+      --region $REGION \
+      --query 'Subnet.SubnetId' \
+      --output text)
+
+    aws ec2 create-tags --resources $PRIVATE_SUBNET_2 --tags Key=Name,Value="${VPC_NAME}-private-2" --region $REGION
+    print_success "Private Subnet 2 created: $PRIVATE_SUBNET_2"
+fi
+
+print_success "Private Subnets configured: $PRIVATE_SUBNET_1, $PRIVATE_SUBNET_2"
 
 # 5. Create Database Subnets (for RDS)
 print_status "Creating Database Subnets"
-DB_SUBNET_1=$(aws ec2 create-subnet \
-  --vpc-id $VPC_ID \
-  --cidr-block 10.0.5.0/24 \
-  --availability-zone ${REGION}a \
-  --region $REGION \
-  --query 'Subnet.SubnetId' \
-  --output text)
 
-DB_SUBNET_2=$(aws ec2 create-subnet \
-  --vpc-id $VPC_ID \
-  --cidr-block 10.0.6.0/24 \
-  --availability-zone ${REGION}b \
-  --region $REGION \
-  --query 'Subnet.SubnetId' \
-  --output text)
+# Check if database subnets already exist
+if DB_SUBNET_1=$(subnet_exists "10.0.5.0/24"); then
+    print_warning "Database Subnet 1 already exists: $DB_SUBNET_1"
+else
+    DB_SUBNET_1=$(aws ec2 create-subnet \
+      --vpc-id $VPC_ID \
+      --cidr-block 10.0.5.0/24 \
+      --availability-zone ${REGION}a \
+      --region $REGION \
+      --query 'Subnet.SubnetId' \
+      --output text)
 
-aws ec2 create-tags --resources $DB_SUBNET_1 --tags Key=Name,Value="${VPC_NAME}-db-1" --region $REGION
-aws ec2 create-tags --resources $DB_SUBNET_2 --tags Key=Name,Value="${VPC_NAME}-db-2" --region $REGION
+    aws ec2 create-tags --resources $DB_SUBNET_1 --tags Key=Name,Value="${VPC_NAME}-db-1" --region $REGION
+    print_success "Database Subnet 1 created: $DB_SUBNET_1"
+fi
 
-print_success "Database Subnets created: $DB_SUBNET_1, $DB_SUBNET_2"
+if DB_SUBNET_2=$(subnet_exists "10.0.6.0/24"); then
+    print_warning "Database Subnet 2 already exists: $DB_SUBNET_2"
+else
+    DB_SUBNET_2=$(aws ec2 create-subnet \
+      --vpc-id $VPC_ID \
+      --cidr-block 10.0.6.0/24 \
+      --availability-zone ${REGION}b \
+      --region $REGION \
+      --query 'Subnet.SubnetId' \
+      --output text)
+
+    aws ec2 create-tags --resources $DB_SUBNET_2 --tags Key=Name,Value="${VPC_NAME}-db-2" --region $REGION
+    print_success "Database Subnet 2 created: $DB_SUBNET_2"
+fi
+
+print_success "Database Subnets configured: $DB_SUBNET_1, $DB_SUBNET_2"
 
 # 6. Create Route Tables
 print_status "Creating Route Tables"
@@ -204,48 +323,68 @@ print_success "Route Tables created and configured"
 print_status "Creating Security Groups"
 
 # EKS Cluster Security Group
-EKS_CLUSTER_SG=$(aws ec2 create-security-group \
-  --group-name "${CLUSTER_NAME}-cluster-sg" \
-  --description "Security group for EKS cluster control plane" \
-  --vpc-id $VPC_ID \
-  --region $REGION \
-  --query 'GroupId' \
-  --output text)
+if EKS_CLUSTER_SG=$(security_group_exists "${CLUSTER_NAME}-cluster-sg"); then
+    print_warning "EKS Cluster Security Group already exists: $EKS_CLUSTER_SG"
+else
+    EKS_CLUSTER_SG=$(aws ec2 create-security-group \
+      --group-name "${CLUSTER_NAME}-cluster-sg" \
+      --description "Security group for EKS cluster control plane" \
+      --vpc-id $VPC_ID \
+      --region $REGION \
+      --query 'GroupId' \
+      --output text)
 
-aws ec2 create-tags --resources $EKS_CLUSTER_SG --tags Key=Name,Value="${CLUSTER_NAME}-cluster-sg" --region $REGION
+    aws ec2 create-tags --resources $EKS_CLUSTER_SG --tags Key=Name,Value="${CLUSTER_NAME}-cluster-sg" --region $REGION
+    print_success "EKS Cluster Security Group created: $EKS_CLUSTER_SG"
+fi
 
 # EKS Node Security Group
-EKS_NODE_SG=$(aws ec2 create-security-group \
-  --group-name "${CLUSTER_NAME}-node-sg" \
-  --description "Security group for EKS worker nodes" \
-  --vpc-id $VPC_ID \
-  --region $REGION \
-  --query 'GroupId' \
-  --output text)
+if EKS_NODE_SG=$(security_group_exists "${CLUSTER_NAME}-node-sg"); then
+    print_warning "EKS Node Security Group already exists: $EKS_NODE_SG"
+else
+    EKS_NODE_SG=$(aws ec2 create-security-group \
+      --group-name "${CLUSTER_NAME}-node-sg" \
+      --description "Security group for EKS worker nodes" \
+      --vpc-id $VPC_ID \
+      --region $REGION \
+      --query 'GroupId' \
+      --output text)
 
-aws ec2 create-tags --resources $EKS_NODE_SG --tags Key=Name,Value="${CLUSTER_NAME}-node-sg" --region $REGION
+    aws ec2 create-tags --resources $EKS_NODE_SG --tags Key=Name,Value="${CLUSTER_NAME}-node-sg" --region $REGION
+    print_success "EKS Node Security Group created: $EKS_NODE_SG"
+fi
 
 # RDS Security Group
-RDS_SG=$(aws ec2 create-security-group \
-  --group-name "${RDS_INSTANCE_NAME}-sg" \
-  --description "Security group for RDS instance" \
-  --vpc-id $VPC_ID \
-  --region $REGION \
-  --query 'GroupId' \
-  --output text)
+if RDS_SG=$(security_group_exists "${RDS_INSTANCE_NAME}-sg"); then
+    print_warning "RDS Security Group already exists: $RDS_SG"
+else
+    RDS_SG=$(aws ec2 create-security-group \
+      --group-name "${RDS_INSTANCE_NAME}-sg" \
+      --description "Security group for RDS instance" \
+      --vpc-id $VPC_ID \
+      --region $REGION \
+      --query 'GroupId' \
+      --output text)
 
-aws ec2 create-tags --resources $RDS_SG --tags Key=Name,Value="${RDS_INSTANCE_NAME}-sg" --region $REGION
+    aws ec2 create-tags --resources $RDS_SG --tags Key=Name,Value="${RDS_INSTANCE_NAME}-sg" --region $REGION
+    print_success "RDS Security Group created: $RDS_SG"
+fi
 
 # ALB Security Group
-ALB_SG=$(aws ec2 create-security-group \
-  --group-name "${CLUSTER_NAME}-alb-sg" \
-  --description "Security group for Application Load Balancer" \
-  --vpc-id $VPC_ID \
-  --region $REGION \
-  --query 'GroupId' \
-  --output text)
+if ALB_SG=$(security_group_exists "${CLUSTER_NAME}-alb-sg"); then
+    print_warning "ALB Security Group already exists: $ALB_SG"
+else
+    ALB_SG=$(aws ec2 create-security-group \
+      --group-name "${CLUSTER_NAME}-alb-sg" \
+      --description "Security group for Application Load Balancer" \
+      --vpc-id $VPC_ID \
+      --region $REGION \
+      --query 'GroupId' \
+      --output text)
 
-aws ec2 create-tags --resources $ALB_SG --tags Key=Name,Value="${CLUSTER_NAME}-alb-sg" --region $REGION
+    aws ec2 create-tags --resources $ALB_SG --tags Key=Name,Value="${CLUSTER_NAME}-alb-sg" --region $REGION
+    print_success "ALB Security Group created: $ALB_SG"
+fi
 
 print_success "Security Groups created"
 
@@ -317,68 +456,96 @@ print_success "Security Group Rules configured"
 
 # 9. Create DB Subnet Group
 print_status "Creating DB Subnet Group"
-aws rds create-db-subnet-group \
-  --db-subnet-group-name "${RDS_INSTANCE_NAME}-subnet-group" \
-  --db-subnet-group-description "Subnet group for RDS instance" \
-  --subnet-ids $DB_SUBNET_1 $DB_SUBNET_2 \
-  --region $REGION
 
-print_success "DB Subnet Group created"
+# Check if DB subnet group already exists
+if resource_exists "rds" "db-subnet-group-name" "DBSubnetGroups[0].DBSubnetGroupName" "${RDS_INSTANCE_NAME}-subnet-group"; then
+    print_warning "DB Subnet Group already exists: ${RDS_INSTANCE_NAME}-subnet-group"
+else
+    aws rds create-db-subnet-group \
+      --db-subnet-group-name "${RDS_INSTANCE_NAME}-subnet-group" \
+      --db-subnet-group-description "Subnet group for RDS instance" \
+      --subnet-ids $DB_SUBNET_1 $DB_SUBNET_2 \
+      --region $REGION
+    print_success "DB Subnet Group created"
+fi
 
 # 10. Create RDS Instance
 print_status "Creating RDS Instance"
-RDS_ENDPOINT=$(aws rds create-db-instance \
-  --db-instance-identifier $RDS_INSTANCE_NAME \
-  --db-instance-class db.t3.micro \
-  --engine postgres \
-  --engine-version 15.4 \
-  --master-username $DB_USERNAME \
-  --master-user-password $DB_PASSWORD \
-  --allocated-storage 20 \
-  --storage-type gp2 \
-  --db-subnet-group-name "${RDS_INSTANCE_NAME}-subnet-group" \
-  --vpc-security-group-ids $RDS_SG \
-  --backup-retention-period 7 \
-  --storage-encrypted \
-  --region $REGION \
-  --query 'DBInstance.Endpoint.Address' \
-  --output text)
 
-print_success "RDS Instance created: $RDS_ENDPOINT"
+# Check if RDS instance already exists
+if resource_exists "rds" "db-instance-identifier" "DBInstances[0].DBInstanceIdentifier" "$RDS_INSTANCE_NAME"; then
+    print_warning "RDS Instance already exists: $RDS_INSTANCE_NAME"
+    RDS_ENDPOINT=$(aws rds describe-db-instances \
+        --db-instance-identifier $RDS_INSTANCE_NAME \
+        --region $REGION \
+        --query 'DBInstances[0].Endpoint.Address' \
+        --output text)
+    print_success "Using existing RDS endpoint: $RDS_ENDPOINT"
+else
+    # Get the latest available PostgreSQL version
+    print_status "Checking available PostgreSQL versions..."
+    POSTGRES_VERSION=$(get_latest_postgres_version)
+    print_success "Using PostgreSQL version: $POSTGRES_VERSION"
 
-# Wait for RDS to be available
-print_status "Waiting for RDS instance to be available..."
-aws rds wait db-instance-available \
-  --db-instance-identifier $RDS_INSTANCE_NAME \
-  --region $REGION
+    RDS_ENDPOINT=$(aws rds create-db-instance \
+      --db-instance-identifier $RDS_INSTANCE_NAME \
+      --db-instance-class db.t3.micro \
+      --engine postgres \
+      --engine-version $POSTGRES_VERSION \
+      --master-username $DB_USERNAME \
+      --master-user-password $DB_PASSWORD \
+      --allocated-storage 20 \
+      --storage-type gp2 \
+      --db-subnet-group-name "${RDS_INSTANCE_NAME}-subnet-group" \
+      --vpc-security-group-ids $RDS_SG \
+      --backup-retention-period 7 \
+      --storage-encrypted \
+      --region $REGION \
+      --query 'DBInstance.Endpoint.Address' \
+      --output text)
 
-print_success "RDS instance is available"
+    print_success "RDS Instance created: $RDS_ENDPOINT"
+
+    # Wait for RDS to be available
+    print_status "Waiting for RDS instance to be available..."
+    aws rds wait db-instance-available \
+      --db-instance-identifier $RDS_INSTANCE_NAME \
+      --region $REGION
+
+    print_success "RDS instance is available"
+fi
 
 # 11. Create EKS Cluster
 print_status "Creating EKS Cluster"
-eksctl create cluster \
-  --name $CLUSTER_NAME \
-  --region $REGION \
-  --vpc-private-subnets $PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2 \
-  --vpc-public-subnets $PUBLIC_SUBNET_1,$PUBLIC_SUBNET_2 \
-  --nodegroup-name standard-workers \
-  --node-type t3.medium \
-  --nodes 2 \
-  --nodes-min 1 \
-  --nodes-max 4 \
-  --managed \
-  --cluster-endpoint-public-access \
-  --cluster-endpoint-private-access \
-  --cluster-security-groups $EKS_CLUSTER_SG \
-  --node-security-groups $EKS_NODE_SG \
-  --ssh-access \
-  --ssh-public-key my-key \
-  --external-dns-access \
-  --full-ecr-access \
-  --appmesh-access \
-  --alb-ingress-access
 
-print_success "EKS Cluster created"
+# Check if EKS cluster already exists
+if aws eks describe-cluster --name $CLUSTER_NAME --region $REGION &>/dev/null; then
+    print_warning "EKS Cluster already exists: $CLUSTER_NAME"
+else
+    eksctl create cluster \
+      --name $CLUSTER_NAME \
+      --region $REGION \
+      --vpc-private-subnets $PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2 \
+      --vpc-public-subnets $PUBLIC_SUBNET_1,$PUBLIC_SUBNET_2 \
+      --nodegroup-name standard-workers \
+      --node-type t3.medium \
+      --nodes 2 \
+      --nodes-min 1 \
+      --nodes-max 4 \
+      --managed \
+      --cluster-endpoint-public-access \
+      --cluster-endpoint-private-access \
+      --cluster-security-groups $EKS_CLUSTER_SG \
+      --node-security-groups $EKS_NODE_SG \
+      --ssh-access \
+      --ssh-public-key my-key \
+      --external-dns-access \
+      --full-ecr-access \
+      --appmesh-access \
+      --alb-ingress-access
+
+    print_success "EKS Cluster created"
+fi
 
 # 12. Update kubeconfig
 print_status "Updating kubeconfig"
