@@ -491,126 +491,66 @@ print_success "Security Groups created"
 # 8. Configure Security Group Rules
 print_status "Configuring Security Group Rules"
 
-# Function to check if security group rule exists
-security_group_rule_exists() {
-    local sg_id=$1
-    local protocol=$2
-    local port=$3
-    local source=$4
-    
-    local rule_exists=$(aws ec2 describe-security-groups \
-        --group-ids $sg_id \
-        --region $REGION \
-        --query "SecurityGroups[0].IpPermissions[?Protocol=='$protocol' && FromPort==$port && ToPort==$port].UserIdGroupPairs[?GroupId=='$source'].GroupId" \
-        --output text)
-    
-    if [ "$rule_exists" != "None" ] && [ -n "$rule_exists" ]; then
-        return 0
-    else
-        return 1
-    fi
-}
-
 # EKS Cluster SG Rules
-if ! security_group_rule_exists $EKS_CLUSTER_SG "tcp" 443 $EKS_NODE_SG; then
-    aws ec2 authorize-security-group-ingress \
-      --group-id $EKS_CLUSTER_SG \
-      --protocol tcp \
-      --port 443 \
-      --source-group $EKS_NODE_SG \
-      --region $REGION
-    print_success "EKS Cluster SG rule added"
-else
-    print_warning "EKS Cluster SG rule already exists"
-fi
+aws ec2 authorize-security-group-ingress \
+  --group-id $EKS_CLUSTER_SG \
+  --protocol tcp \
+  --port 443 \
+  --source-group $EKS_NODE_SG \
+  --region $REGION 2>/dev/null && print_success "EKS Cluster SG rule added" || print_warning "EKS Cluster SG rule already exists"
 
 # EKS Node SG Rules
-if ! security_group_rule_exists $EKS_NODE_SG "tcp" -1 $EKS_NODE_SG; then
-    aws ec2 authorize-security-group-ingress \
-      --group-id $EKS_NODE_SG \
-      --protocol all \
-      --source-group $EKS_NODE_SG \
-      --region $REGION
-    print_success "EKS Node SG self-referencing rule added"
-else
-    print_warning "EKS Node SG self-referencing rule already exists"
-fi
+aws ec2 authorize-security-group-ingress \
+  --group-id $EKS_NODE_SG \
+  --protocol all \
+  --source-group $EKS_NODE_SG \
+  --region $REGION 2>/dev/null && print_success "EKS Node SG self-referencing rule added" || print_warning "EKS Node SG self-referencing rule already exists"
 
-if ! security_group_rule_exists $EKS_NODE_SG "tcp" 443 $EKS_CLUSTER_SG; then
-    aws ec2 authorize-security-group-ingress \
-      --group-id $EKS_NODE_SG \
-      --protocol tcp \
-      --port 443 \
-      --source-group $EKS_CLUSTER_SG \
-      --region $REGION
-    print_success "EKS Node SG cluster access rule added"
-else
-    print_warning "EKS Node SG cluster access rule already exists"
-fi
+aws ec2 authorize-security-group-ingress \
+  --group-id $EKS_NODE_SG \
+  --protocol tcp \
+  --port 443 \
+  --source-group $EKS_CLUSTER_SG \
+  --region $REGION 2>/dev/null && print_success "EKS Node SG cluster access rule added" || print_warning "EKS Node SG cluster access rule already exists"
 
-if ! security_group_rule_exists $EKS_NODE_SG "tcp" 8080 $ALB_SG; then
-    aws ec2 authorize-security-group-ingress \
-      --group-id $EKS_NODE_SG \
-      --protocol tcp \
-      --port 8080 \
-      --source-group $ALB_SG \
-      --region $REGION
-    print_success "EKS Node SG ALB access rule added"
-else
-    print_warning "EKS Node SG ALB access rule already exists"
-fi
+aws ec2 authorize-security-group-ingress \
+  --group-id $EKS_NODE_SG \
+  --protocol tcp \
+  --port 8080 \
+  --source-group $ALB_SG \
+  --region $REGION 2>/dev/null && print_success "EKS Node SG ALB access rule added" || print_warning "EKS Node SG ALB access rule already exists"
 
 # RDS SG Rules
-if ! security_group_rule_exists $RDS_SG "tcp" 5432 $EKS_NODE_SG; then
-    aws ec2 authorize-security-group-ingress \
-      --group-id $RDS_SG \
-      --protocol tcp \
-      --port 5432 \
-      --source-group $EKS_NODE_SG \
-      --region $REGION
-    print_success "RDS SG EKS access rule added"
-else
-    print_warning "RDS SG EKS access rule already exists"
-fi
+aws ec2 authorize-security-group-ingress \
+  --group-id $RDS_SG \
+  --protocol tcp \
+  --port 5432 \
+  --source-group $EKS_NODE_SG \
+  --region $REGION 2>/dev/null && print_success "RDS SG EKS access rule added" || print_warning "RDS SG EKS access rule already exists"
 
 # Allow access from your current IP for management
 YOUR_IP=$(curl -s ifconfig.me)
-if ! aws ec2 describe-security-groups --group-ids $RDS_SG --region $REGION --query "SecurityGroups[0].IpPermissions[?Protocol=='tcp' && FromPort==5432 && ToPort==5432].IpRanges[?CidrIp=='${YOUR_IP}/32'].CidrIp" --output text | grep -q "${YOUR_IP}/32"; then
-    aws ec2 authorize-security-group-ingress \
-      --group-id $RDS_SG \
-      --protocol tcp \
-      --port 5432 \
-      --cidr "${YOUR_IP}/32" \
-      --region $REGION
-    print_success "RDS SG management IP access rule added"
-else
-    print_warning "RDS SG management IP access rule already exists"
-fi
+aws ec2 authorize-security-group-ingress \
+  --group-id $RDS_SG \
+  --protocol tcp \
+  --port 5432 \
+  --cidr "${YOUR_IP}/32" \
+  --region $REGION 2>/dev/null && print_success "RDS SG management IP access rule added" || print_warning "RDS SG management IP access rule already exists"
 
 # ALB SG Rules
-if ! aws ec2 describe-security-groups --group-ids $ALB_SG --region $REGION --query "SecurityGroups[0].IpPermissions[?Protocol=='tcp' && FromPort==80 && ToPort==80].IpRanges[?CidrIp=='0.0.0.0/0'].CidrIp" --output text | grep -q "0.0.0.0/0"; then
-    aws ec2 authorize-security-group-ingress \
-      --group-id $ALB_SG \
-      --protocol tcp \
-      --port 80 \
-      --cidr "0.0.0.0/0" \
-      --region $REGION
-    print_success "ALB SG HTTP access rule added"
-else
-    print_warning "ALB SG HTTP access rule already exists"
-fi
+aws ec2 authorize-security-group-ingress \
+  --group-id $ALB_SG \
+  --protocol tcp \
+  --port 80 \
+  --cidr "0.0.0.0/0" \
+  --region $REGION 2>/dev/null && print_success "ALB SG HTTP access rule added" || print_warning "ALB SG HTTP access rule already exists"
 
-if ! aws ec2 describe-security-groups --group-ids $ALB_SG --region $REGION --query "SecurityGroups[0].IpPermissions[?Protocol=='tcp' && FromPort==443 && ToPort==443].IpRanges[?CidrIp=='0.0.0.0/0'].CidrIp" --output text | grep -q "0.0.0.0/0"; then
-    aws ec2 authorize-security-group-ingress \
-      --group-id $ALB_SG \
-      --protocol tcp \
-      --port 443 \
-      --cidr "0.0.0.0/0" \
-      --region $REGION
-    print_success "ALB SG HTTPS access rule added"
-else
-    print_warning "ALB SG HTTPS access rule already exists"
-fi
+aws ec2 authorize-security-group-ingress \
+  --group-id $ALB_SG \
+  --protocol tcp \
+  --port 443 \
+  --cidr "0.0.0.0/0" \
+  --region $REGION 2>/dev/null && print_success "ALB SG HTTPS access rule added" || print_warning "ALB SG HTTPS access rule already exists"
 
 print_success "Security Group Rules configured"
 
