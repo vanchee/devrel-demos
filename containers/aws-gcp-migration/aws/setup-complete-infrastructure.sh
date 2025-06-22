@@ -14,6 +14,7 @@ RDS_INSTANCE_NAME="pv-syd-summit-demo-rds"
 DB_NAME="cymbalbank"
 DB_USERNAME="postgres"
 DB_PASSWORD="Chiapet22!"
+POSTGRES_VERSION="15.5"  # Default PostgreSQL version for Sydney region - stable and widely supported
 
 # Colors for output
 RED='\033[0;31m'
@@ -39,17 +40,6 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Function to get the latest available PostgreSQL version
-get_latest_postgres_version() {
-    local latest_version=$(aws rds describe-db-engine-versions \
-        --engine postgres \
-        --region $REGION \
-        --query 'DBEngineVersions[?SupportsStorageEncryption==`true`].EngineVersion' \
-        --output text | tr '\t' '\n' | sort -V | tail -1)
-    
-    echo $latest_version
-}
-
 # Function to check if command exists
 check_command() {
     if ! command -v $1 &> /dev/null; then
@@ -73,6 +63,20 @@ fi
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 print_success "Using AWS Account: $ACCOUNT_ID"
+
+# Prompt for PostgreSQL version
+echo ""
+echo -e "${BLUE}PostgreSQL Version${NC} [default: $POSTGRES_VERSION]: "
+read -r user_postgres_version
+
+if [ -n "$user_postgres_version" ]; then
+    POSTGRES_VERSION="$user_postgres_version"
+    echo -e "${GREEN}Using PostgreSQL version: $POSTGRES_VERSION${NC}"
+else
+    echo -e "${GREEN}Using default PostgreSQL version: $POSTGRES_VERSION${NC}"
+fi
+
+echo ""
 
 # Function to check if resource exists
 resource_exists() {
@@ -189,6 +193,57 @@ rds_instance_exists() {
     else
         return 1
     fi
+}
+
+# Function to prompt for user input with default value
+prompt_with_default() {
+    local prompt_text=$1
+    local default_value=$2
+    local var_name=$3
+    
+    echo -e "${BLUE}$prompt_text${NC} [default: $default_value]: "
+    read -r user_input
+    
+    if [ -z "$user_input" ]; then
+        eval "$var_name=\"$default_value\""
+        echo -e "${GREEN}Using default value: $default_value${NC}"
+    else
+        eval "$var_name=\"$user_input\""
+        echo -e "${GREEN}Using custom value: $user_input${NC}"
+    fi
+}
+
+# Function to prompt for password input
+prompt_password() {
+    local prompt_text=$1
+    local var_name=$2
+    
+    echo -e "${BLUE}$prompt_text${NC}: "
+    read -s password_input
+    echo  # Add newline after password input
+    
+    if [ -z "$password_input" ]; then
+        print_error "Password cannot be empty"
+        exit 1
+    fi
+    
+    eval "$var_name=\"$password_input\""
+    echo -e "${GREEN}Password set successfully${NC}"
+}
+
+# Function to prompt for confirmation
+prompt_confirmation() {
+    local prompt_text=$1
+    
+    while true; do
+        echo -e "${BLUE}$prompt_text${NC} (y/n): "
+        read -r confirmation
+        case $confirmation in
+            [Yy]* ) return 0;;
+            [Nn]* ) return 1;;
+            * ) echo -e "${YELLOW}Please answer yes or no.${NC}";;
+        esac
+    done
 }
 
 # 1. Create VPC with CIDR 10.0.0.0/16
@@ -617,11 +672,6 @@ if rds_instance_exists $RDS_INSTANCE_NAME; then
         --output text)
     print_success "Using existing RDS endpoint: $RDS_ENDPOINT"
 else
-    # Get the latest available PostgreSQL version
-    print_status "Checking available PostgreSQL versions..."
-    POSTGRES_VERSION=$(get_latest_postgres_version)
-    print_success "Using PostgreSQL version: $POSTGRES_VERSION"
-
     RDS_ENDPOINT=$(aws rds create-db-instance \
       --db-instance-identifier $RDS_INSTANCE_NAME \
       --db-instance-class db.t3.micro \
