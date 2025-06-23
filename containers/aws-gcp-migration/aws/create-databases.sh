@@ -9,7 +9,7 @@ set -e
 REGION="ap-southeast-2"
 RDS_INSTANCE_ID="your-rds-instance-name"  # Replace with your actual RDS instance name
 DB_USERNAME="postgres"
-DB_PASSWORD="Chiapet22!"  # Replace with your actual password
+DB_PASSWORD=""  # Replace with your actual password
 
 # Colors for output
 RED='\033[0;31m'
